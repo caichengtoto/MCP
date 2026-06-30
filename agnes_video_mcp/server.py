@@ -34,7 +34,7 @@ app = Server("agnes-video")
 def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
+        _client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=30.0))
     return _client
 
 
@@ -81,7 +81,15 @@ async def create_video_task(
         "Content-Type": "application/json",
     }
     client = get_client()
-    resp = await client.post(CREATE_URL, headers=headers, json=body)
+    try:
+        resp = await client.post(CREATE_URL, headers=headers, json=body)
+    except httpx.TimeoutException:
+        raise RuntimeError("创建视频任务超时（连接或响应超时），请稍后重试")
+    except httpx.RequestError as e:
+        raise RuntimeError(f"创建视频任务网络错误: {e}")
+
+    if resp.status_code == 429:
+        raise RuntimeError(f"视频生成速率限制（每分钟1次）。请等待一分钟后重试。详细信息: {resp.text}")
     if resp.status_code != 200:
         raise RuntimeError(f"创建任务失败 (HTTP {resp.status_code}): {resp.text}")
     return resp.json()
@@ -275,8 +283,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             )
         ]
 
+    except httpx.TimeoutException:
+        return [TextContent(type="text", text="❌ 请求超时。Agnes 视频 API 响应较慢，请稍后重试。")]
+    except RuntimeError as e:
+        return [TextContent(type="text", text=f"❌ {e}")]
     except Exception as e:
-        return [TextContent(type="text", text=f"❌ 生成失败: {e}")]
+        return [TextContent(type="text", text=f"❌ 未知错误: {type(e).__name__}: {e}")]
 
 
 async def main():
